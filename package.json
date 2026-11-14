@@ -1,0 +1,11 @@
+{
+  "name": "paytm-saathi",
+  "version": "1.0.0",
+  "private": true,
+  "engines": {
+    "node": "22.x"
+  },
+  "scripts": {
+    "build": "cd frontend && npm install && npm run build"
+  }
+}

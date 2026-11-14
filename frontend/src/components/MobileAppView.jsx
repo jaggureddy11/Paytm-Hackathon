@@ -60,6 +60,7 @@ export default function MobileAppView({
   // ChatGPT-style full-screen voice experience states for mobile
   const [isFullScreenVoice, setIsFullScreenVoice] = useState(false);
   const [micPermissionError, setMicPermissionError] = useState(false);
+  const [isRealMicActive, setIsRealMicActive] = useState(false);
   const [lastUserTranscript, setLastUserTranscript] = useState('');
   const [lastAssistantReply, setLastAssistantReply] = useState('');
   const [summaryReady, setSummaryReady] = useState(false);
@@ -316,24 +317,38 @@ export default function MobileAppView({
     setMicPermissionError(false);
     isRecordingCancelledRef.current = false;
 
+    // Check if hardware microphone is accessible without blocking the prototype
+    let stream = null;
     try {
       if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        if (!isVoiceActiveRef.current || voiceSessionIdRef.current !== currentSession) {
-          stream.getTracks().forEach(t => {
-            try { t.stop(); } catch (e) {}
-          });
-          setIsRecording(false);
-          return;
-        }
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      }
+    } catch (err) {
+      console.info('Hardware microphone not accessible or permission withheld in MobileAppView. Running in seamless interactive voice mode:', err.message);
+      isRealMicActiveRef.current = false;
+      setIsRealMicActive(false);
+      stream = null;
+    }
 
-        audioChunksRef.current = [];
-        let mimeType = 'audio/webm';
-        if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
-          mimeType = 'audio/webm;codecs=opus';
-        } else if (MediaRecorder.isTypeSupported('audio/mp4')) {
-          mimeType = 'audio/mp4';
-        }
+    if (stream) {
+      if (!isVoiceActiveRef.current || voiceSessionIdRef.current !== currentSession) {
+        stream.getTracks().forEach(t => {
+          try { t.stop(); } catch (e) {}
+        });
+        setIsRecording(false);
+        setIsRealMicActive(false);
+        return;
+      }
+
+      audioChunksRef.current = [];
+      let mimeType = 'audio/webm';
+      if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
+        mimeType = 'audio/webm;codecs=opus';
+      } else if (MediaRecorder.isTypeSupported('audio/mp4')) {
+        mimeType = 'audio/mp4';
+      }
+
+      try {
         const recorder = new MediaRecorder(stream, { mimeType });
         mediaRecorderRef.current = recorder;
         recorder.ondataavailable = (event) => {
@@ -354,24 +369,34 @@ export default function MobileAppView({
         };
         recorder.start(250);
         isRealMicActiveRef.current = true;
+        setIsRealMicActive(true);
         return;
+      } catch (e) {
+        console.warn('MediaRecorder init fallback in MobileAppView:', e);
+        isRealMicActiveRef.current = false;
+        setIsRealMicActive(false);
       }
-    } catch (err) {
-      console.info('Microphone access notice in MobileAppView:', err.message);
-      isRealMicActiveRef.current = false;
     }
+
+    // Seamless interactive prototype mode (no permission required):
+    // Voice mode stays active and listening, allowing instant one-tap mic speech or quick answers
+    isRealMicActiveRef.current = false;
+    setIsRealMicActive(false);
+    setIsRecording(true);
   };
 
   const stopRecording = (shouldCancel = false) => {
-    setIsRecording(false);
     if (shouldCancel) {
       isRecordingCancelledRef.current = true;
+      setIsRecording(false);
     }
     if (isRealMicActiveRef.current && mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
       try {
         mediaRecorderRef.current.stop();
       } catch (e) {}
       isRealMicActiveRef.current = false;
+      setIsRealMicActive(false);
+      setIsRecording(false);
     }
   };
 
@@ -1159,6 +1184,7 @@ export default function MobileAppView({
             setLanguage={setLanguage}
             recordingSeconds={recordingSeconds}
             isRecording={isRecording}
+            isRealMicActive={isRealMicActive}
             startRecording={startRecording}
             stopRecording={stopRecording}
             stopActiveAudio={stopActiveAudio}

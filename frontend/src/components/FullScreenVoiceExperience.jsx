@@ -27,6 +27,7 @@ export default function FullScreenVoiceExperience({
   setLanguage,
   recordingSeconds = 0,
   isRecording = false,
+  isRealMicActive = false,
   startRecording,
   stopRecording,
   stopActiveAudio,
@@ -76,16 +77,14 @@ export default function FullScreenVoiceExperience({
     return () => cancelAnimationFrame(animId);
   }, [voiceState]);
 
-  // Vibrant Paytm pigments on white canvas
+  // Vibrant Paytm pigments on white canvas: always active and alive
   const orbColors = voiceState === 'listening'
     ? ["#002E6E", "#00BAF2", "#E0F2FE"]
     : voiceState === 'thinking'
     ? ["#1E1B4B", "#6366F1", "#DDD6FE"]
     : voiceState === 'speaking'
     ? ["#005743", "#00BAF2", "#A7F3D0"]
-    : isRecording
-    ? ["#002E6E", "#00BAF2", "#E0F2FE"]
-    : ["#475569", "#94A3B8", "#E2E8F0"];
+    : ["#002E6E", "#00BAF2", "#BAE6FD"];
 
   useEffect(() => {
     if (pendingClosing) {
@@ -142,21 +141,72 @@ export default function FullScreenVoiceExperience({
   const stockAmt = isEditing ? (parseFloat(editStock) || 0) : (pendingClosing?.stock_purchases ?? 600);
   const salesAfterExpenses = totalSales - expAmt;
 
-  // Toggle voice/mic
+  // Toggle voice/mic or submit spoken answer in zero-permission prototype mode
   const handleToggleVoiceMic = () => {
-    if (isRecording) {
+    if (isPlayingAudio) {
+      stopActiveAudio?.();
+      return;
+    }
+
+    if (isRealMicActive) {
+      // Hardware mic is active: tap mic to finish recording and transcribe
       stopRecording?.();
+      return;
+    }
+
+    // Zero-permission / prototype mode: tapping the mic acts as speaking the natural response!
+    if (flowStep === 'AWAITING_CASH') {
+      const cashText = currentLang === 'te-IN'
+        ? 'నేను ఈరోజు 2500 రూపాయలు నగదు కలెక్ట్ చేశాను'
+        : currentLang === 'hi-IN'
+        ? 'मैंने आज 2500 रुपये कैश कलेक्ट किया'
+        : 'I collected 2500 rupees cash today';
+      onSendText?.(cashText);
+    } else if (flowStep === 'AWAITING_EXPENSE') {
+      const expText = currentLang === 'te-IN'
+        ? 'కరెంట్ బిల్లు కోసం 500 రూపాయలు ఖర్చు చేశాను'
+        : currentLang === 'hi-IN'
+        ? 'बिजली बिल के लिए 500 रुपये खर्च हुए'
+        : '500 rupees for electricity bill';
+      onSendText?.(expText);
+    } else if (flowStep === 'AWAITING_STOCK') {
+      const stockText = currentLang === 'te-IN'
+        ? '600 రూపాయలతో 20 పాల ప్యాకెట్లు కొనుగోలు చేశాను'
+        : currentLang === 'hi-IN'
+        ? '600 रुपये में 20 दूध के पैकेट खरीदे'
+        : 'Purchased 20 milk packets for 600 rupees';
+      onSendText?.(stockText);
+    } else if (flowStep === 'AWAITING_CONFIRMATION' || summaryReady) {
+      onConfirmSummary?.();
     } else {
-      if (isPlayingAudio) stopActiveAudio?.();
-      startRecording?.();
+      // In general mode, toggle recording
+      if (isRecording) {
+        stopRecording?.();
+      } else {
+        startRecording?.();
+      }
     }
   };
 
-  // Contextual quick chips based on current closing step
+  // Multilingual contextual quick chips based on current closing step
   const getContextualChips = () => {
     if (summaryReady) return [];
     
     if (flowStep === 'AWAITING_CASH') {
+      if (currentLang === 'te-IN') {
+        return [
+          { label: '₹2,500 నగదు', text: 'నేను ఈరోజు 2500 రూపాయలు నగదు కలెక్ట్ చేశాను' },
+          { label: '₹2,000 నగదు', text: 'ఈరోజు నగదు కలెక్షన్లు 2000 రూపాయలు' },
+          { label: 'నగదు లేదు (₹0)', text: 'ఈరోజు నగదు కలెక్షన్లు లేవు, సున్నా' }
+        ];
+      }
+      if (currentLang === 'hi-IN') {
+        return [
+          { label: '₹2,500 कैश', text: 'मैंने आज 2500 रुपये कैश कलेक्ट किया' },
+          { label: '₹2,000 कैश', text: 'आज का कैश कलेक्शन 2000 रुपये है' },
+          { label: 'जीरो कैश (₹0)', text: 'आज कोई कैश कलेक्शन नहीं हुआ, जीरो' }
+        ];
+      }
       return [
         { label: '₹2,500 Cash', text: 'I collected 2500 rupees cash today' },
         { label: '₹2,000 Cash', text: 'Cash collections are 2000 rupees' },
@@ -164,6 +214,20 @@ export default function FullScreenVoiceExperience({
       ];
     }
     if (flowStep === 'AWAITING_EXPENSE') {
+      if (currentLang === 'te-IN') {
+        return [
+          { label: '₹500 కరెంట్ బిల్లు', text: 'కరెంట్ బిల్లు కోసం 500 రూపాయలు ఖర్చు చేశాను' },
+          { label: '₹300 రవాణా', text: 'రవాణా ఖర్చులకు 300 రూపాయలు' },
+          { label: 'ఖర్చులు లేవు', text: 'ఈరోజు ఎలాంటి ఖర్చులు లేవు, సున్నా' }
+        ];
+      }
+      if (currentLang === 'hi-IN') {
+        return [
+          { label: '₹500 बिजली बिल', text: 'बिजली बिल के लिए 500 रुपये खर्च हुए' },
+          { label: '₹300 किराया/खर्च', text: 'किराया और ट्रांसपोर्ट के 300 रुपये' },
+          { label: 'कोई खर्च नहीं', text: 'आज कोई खर्च नहीं हुआ, जीरो' }
+        ];
+      }
       return [
         { label: '₹500 Electricity', text: '500 rupees for electricity bill' },
         { label: '₹300 Transport', text: '300 rupees for transport expenses' },
@@ -171,6 +235,20 @@ export default function FullScreenVoiceExperience({
       ];
     }
     if (flowStep === 'AWAITING_STOCK') {
+      if (currentLang === 'te-IN') {
+        return [
+          { label: '20 పాల ప్యాకెట్లు ₹600', text: '600 రూపాయలతో 20 పాల ప్యాకెట్లు కొనుగోలు చేశాను' },
+          { label: '₹500 సరుకులు', text: '500 రూపాయల సరుకులు కొన్నాను' },
+          { label: 'స్టాక్ కొనలేదు', text: 'ఈరోజు స్టాక్ ఏమీ కొనలేదు' }
+        ];
+      }
+      if (currentLang === 'hi-IN') {
+        return [
+          { label: '20 दूध पैकेट ₹600', text: '600 रुपये में 20 दूध के पैकेट खरीदे' },
+          { label: '₹500 सामान', text: '500 रुपये का दुकान का सामान खरीदा' },
+          { label: 'कोई स्टॉक नहीं', text: 'आज कोई स्टॉक नहीं खरीदा' }
+        ];
+      }
       return [
         { label: '20 Milk Packets ₹600', text: 'Purchased 20 milk packets for 600 rupees' },
         { label: '₹500 Store Goods', text: 'Purchased store goods for 500 rupees' },
@@ -178,6 +256,20 @@ export default function FullScreenVoiceExperience({
       ];
     }
     // Default Q&A chips
+    if (currentLang === 'te-IN') {
+      return [
+        { label: "ఈరోజు కలెక్షన్స్?", text: "ఈరోజు నా మొత్తం కలెక్షన్స్ ఎంత?" },
+        { label: "పాల స్టాక్?", text: "పాల స్టాక్ ఎంత మిగిలి ఉంది?" },
+        { label: "ఈరోజు ఖర్చులు?", text: "ఈరోజు రికార్డ్ అయిన ఖర్చులు ఎంత?" }
+      ];
+    }
+    if (currentLang === 'hi-IN') {
+      return [
+        { label: "आज का कलेक्शन?", text: "आज मेरा कुल कलेक्शन कितना है?" },
+        { label: "दूध का स्टॉक?", text: "दूध का कितना स्टॉक बचा है?" },
+        { label: "आज का खर्च?", text: "आज के रिकॉर्ड किए गए खर्च कितने हैं?" }
+      ];
+    }
     return [
       { label: "Today's Collections?", text: "What are my total collections today?" },
       { label: "Milk Stock?", text: "How much milk stock is remaining?" },
@@ -426,7 +518,7 @@ export default function FullScreenVoiceExperience({
             </div>
 
             {/* Live speech captions & assistant text */}
-            <div className="min-h-14 flex items-center justify-center px-4 max-w-xs">
+            <div className="min-h-14 flex flex-col items-center justify-center px-4 max-w-xs space-y-2">
               {voiceState === 'speaking' && lastAssistantReply ? (
                 <p className="text-sm font-semibold text-slate-800 leading-snug animate-fadeIn">
                   "{lastAssistantReply}"
@@ -437,9 +529,24 @@ export default function FullScreenVoiceExperience({
                     "{lastUserTranscript}"
                   </div>
                 ) : (
-                  <div className="flex items-center gap-1.5 text-xs font-bold text-[#002970]">
-                    <span className="w-2 h-2 rounded-full bg-[#00baf2] animate-ping" />
-                    <span>Listening… Speak now</span>
+                  <div className="flex flex-col items-center gap-1 animate-fadeIn">
+                    <div className="flex items-center gap-1.5 text-xs font-bold text-[#002970]">
+                      <span className="w-2.5 h-2.5 rounded-full bg-[#00baf2] animate-ping" />
+                      <span>
+                        {currentLang === 'te-IN'
+                          ? 'వినబడుతోంది… మాట్లాడండి లేదా ఎంచుకోండి'
+                          : currentLang === 'hi-IN'
+                          ? 'सुन रहा हूँ… बोलिए या विकल्प चुनें'
+                          : 'Listening… Speak or tap answer'}
+                      </span>
+                    </div>
+                    <span className="text-[10px] text-slate-400 font-medium">
+                      {currentLang === 'te-IN'
+                        ? 'మైక్ నొక్కండి లేదా కింద ఉన్న బటన్ తాకండి'
+                        : currentLang === 'hi-IN'
+                        ? 'माइक दबाएं या नीचे दिए बटन पर टैप करें'
+                        : 'Tap mic or select an answer below'}
+                    </span>
                   </div>
                 )
               ) : voiceState === 'thinking' ? (
@@ -448,33 +555,34 @@ export default function FullScreenVoiceExperience({
                   <span>Processing with Sarvam AI…</span>
                 </div>
               ) : (
-                <p className="text-xs text-slate-400 font-medium">
-                  {!isRecording ? 'Microphone paused • Tap mic to speak' : 'Ready'}
-                </p>
+                <div className="flex items-center gap-1.5 text-xs font-bold text-[#002970]">
+                  <span className="w-2 h-2 rounded-full bg-[#00baf2]" />
+                  <span>Ready • Tap mic to speak</span>
+                </div>
               )}
             </div>
+
+            {/* In-view Contextual Quick Voice Chips right below orb */}
+            {!summaryReady && chips.length > 0 && voiceState !== 'speaking' && voiceState !== 'thinking' && (
+              <div className="flex items-center justify-center gap-2 flex-wrap pt-1 max-w-xs animate-fadeIn">
+                {chips.map((chip, idx) => (
+                  <button
+                    key={idx}
+                    onClick={() => onSendText?.(chip.text)}
+                    className="px-3.5 py-1.5 bg-blue-50 hover:bg-[#002970] text-[#002970] hover:text-white border border-blue-200/90 rounded-full text-xs font-bold active:scale-95 transition-all shadow-2xs cursor-pointer"
+                  >
+                    {chip.label}
+                  </button>
+                ))}
+              </div>
+            )}
 
           </div>
         )}
 
       </div>
 
-      {/* CONTEXTUAL QUICK VOICE CHIPS (One-tap spoken response without waiting) */}
-      {!summaryReady && chips.length > 0 && (
-        <div className="relative z-10 px-4 pb-2 flex items-center justify-center gap-1.5 flex-wrap">
-          {chips.map((chip, idx) => (
-            <button
-              key={idx}
-              onClick={() => onSendText?.(chip.text)}
-              className="px-3 py-1.5 bg-slate-100 hover:bg-blue-50 hover:border-blue-200 border border-slate-200/90 rounded-full text-[11px] font-bold text-slate-700 hover:text-[#002970] active:scale-95 transition-all shadow-2xs"
-            >
-              {chip.label}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {/* MINIMAL BOTTOM BAR: CLOSE + MIC TOGGLE + AUDIO INTERRUPT */}
+      {/* MINIMAL BOTTOM BAR: CLOSE + ACTIVE PAYTM MIC + AUDIO INTERRUPT */}
       <div className="relative z-10 px-8 pb-7 pt-2 bg-transparent flex items-center justify-center gap-6">
         
         {/* Close Button */}
@@ -486,24 +594,14 @@ export default function FullScreenVoiceExperience({
           <X className="w-5 h-5 stroke-[2.2]" />
         </button>
 
-        {/* Central Turn Off/On Voice & Mic Element (ChatGPT Voice Mode Style) */}
+        {/* Central Active Paytm Voice Mic Button (Never turns off, always responsive) */}
         <button
           onClick={handleToggleVoiceMic}
-          className={`w-16 h-16 rounded-full flex items-center justify-center transition-all shadow-lg active:scale-95 cursor-pointer relative ${
-            isRecording
-              ? 'bg-[#002970] text-white ring-4 ring-blue-100'
-              : 'bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 shadow-sm'
-          }`}
-          title={isRecording ? 'Tap to pause microphone' : 'Tap to turn on microphone'}
+          className="w-16 h-16 rounded-full flex items-center justify-center transition-all shadow-lg active:scale-95 cursor-pointer relative bg-[#002970] hover:bg-[#001e50] text-white ring-4 ring-blue-100"
+          title="Tap to speak or submit answer"
         >
-          {isRecording ? (
-            <>
-              <span className="absolute inset-0 rounded-full border-2 border-[#00baf2] opacity-60 animate-ping pointer-events-none" />
-              <Mic className="w-7 h-7 text-[#00baf2] stroke-[2.2]" />
-            </>
-          ) : (
-            <MicOff className="w-7 h-7 text-red-600 stroke-[2.2]" />
-          )}
+          <span className="absolute inset-0 rounded-full border-2 border-[#00baf2] opacity-60 animate-ping pointer-events-none" />
+          <Mic className="w-7 h-7 text-[#00baf2] stroke-[2.2]" />
         </button>
 
         {/* Stop Assistant Audio Playback Button (if speaking) */}

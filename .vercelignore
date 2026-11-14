@@ -1,0 +1,13 @@
+node_modules
+frontend/node_modules
+.venv
+__pycache__
+*.pyc
+.git
+.vercel
+frontend/dist
+dist
+.env
+.env.local
+.vercel_python_packages
+.DS_Store

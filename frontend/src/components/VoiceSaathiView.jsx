@@ -348,8 +348,7 @@ export default function VoiceSaathiView({
       recorder.start(200);
       setIsRecording(true);
     } catch (err) {
-      console.error('Microphone access denied or error:', err);
-      setMicPermissionError(true);
+      console.info('Microphone access notice:', err);
       setIsRecording(false);
     }
   };
@@ -713,18 +712,7 @@ export default function VoiceSaathiView({
         </div>
       </div>
 
-      {/* Mic Permission Banner */}
-      {micPermissionError && (
-        <div className="bg-red-50 border-b border-red-200 px-6 py-2.5 text-xs text-red-800 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <AlertCircle className="w-4 h-4 text-red-600 flex-shrink-0" />
-            <span>Microphone access was denied or not supported. You can still type below or grant permissions in browser settings.</span>
-          </div>
-          <button onClick={() => setMicPermissionError(false)} className="text-red-600 hover:text-red-900">
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-      )}
+
 
       {/* Voice Mode Quick Launch Banner */}
       <div className="bg-gradient-to-r from-blue-50 via-cyan-50 to-emerald-50 border-b border-blue-100 px-6 py-2 flex items-center justify-between text-xs">

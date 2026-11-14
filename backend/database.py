@@ -1,11 +1,23 @@
 import sqlite3
 import os
+import shutil
 from datetime import datetime, timedelta
 from pathlib import Path
 
-DB_DIR = Path(__file__).parent / "data"
-DB_DIR.mkdir(parents=True, exist_ok=True)
-DB_PATH = DB_DIR / "saathi.db"
+# On Vercel or AWS Lambda serverless environments, the filesystem is read-only except /tmp
+if os.environ.get("VERCEL") or os.environ.get("AWS_LAMBDA_FUNCTION_NAME"):
+    DB_DIR = Path("/tmp")
+    DB_PATH = DB_DIR / "saathi.db"
+    bundled_db = Path(__file__).parent / "data" / "saathi.db"
+    if bundled_db.exists() and not DB_PATH.exists():
+        try:
+            shutil.copyfile(bundled_db, DB_PATH)
+        except Exception:
+            pass
+else:
+    DB_DIR = Path(__file__).parent / "data"
+    DB_DIR.mkdir(parents=True, exist_ok=True)
+    DB_PATH = DB_DIR / "saathi.db"
 
 def get_connection():
     conn = sqlite3.connect(DB_PATH)
