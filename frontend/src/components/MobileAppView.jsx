@@ -72,6 +72,12 @@ export default function MobileAppView({
   const timerRef = useRef(null);
   const isRealMicActiveRef = useRef(false);
 
+  // Robust Voice Lifecycle & Cancellation Management
+  const voiceSessionIdRef = useRef(0);
+  const isVoiceActiveRef = useRef(false);
+  const isRecordingCancelledRef = useRef(false);
+  const activeAbortControllerRef = useRef(null);
+
   useEffect(() => {
     if (showVoiceSheet && voiceMessages.length === 0) {
       setVoiceMessages([
@@ -102,43 +108,142 @@ export default function MobileAppView({
     };
   }, [isRecording]);
 
-  const playAudioBase64 = (base64Audio, onEnded) => {
+  const stopActiveAudio = () => {
+    if (activeAudioRef.current) {
+      try {
+        activeAudioRef.current.pause();
+        activeAudioRef.current.currentTime = 0;
+        activeAudioRef.current.src = '';
+        activeAudioRef.current.onended = null;
+        activeAudioRef.current.onerror = null;
+      } catch (e) {
+        console.warn('Audio silence error:', e);
+      }
+      activeAudioRef.current = null;
+    }
+    // Cancel browser speech synthesis if active
+    if (typeof window !== 'undefined' && window.speechSynthesis) {
+      try {
+        window.speechSynthesis.cancel();
+      } catch (e) {}
+    }
+    // Silence any stray audio elements in DOM
+    try {
+      const allAudio = document.querySelectorAll('audio');
+      allAudio.forEach(el => {
+        try {
+          el.pause();
+          el.currentTime = 0;
+          el.src = '';
+        } catch (e) {}
+      });
+    } catch (e) {}
+    setIsPlayingAudio(false);
+  };
+
+  const handleCloseVoiceMode = () => {
+    // 1. Invalidate session token so no late callbacks or in-flight responses can speak
+    voiceSessionIdRef.current += 1;
+    isVoiceActiveRef.current = false;
+    isRecordingCancelledRef.current = true;
+
+    // 2. Abort all in-flight network requests immediately
+    if (activeAbortControllerRef.current) {
+      try {
+        activeAbortControllerRef.current.abort();
+      } catch (e) {}
+      activeAbortControllerRef.current = null;
+    }
+
+    // 3. Stop audio immediately and definitively
+    stopActiveAudio();
+
+    // 4. Stop recording without processing buffered audio
+    stopRecording(true);
+
+    // 5. Clear recording timers and processing flags
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+    setIsRecording(false);
+    setIsProcessing(false);
+
+    // 6. Dismiss full screen voice overlay
+    setIsFullScreenVoice(false);
+    setShowVoiceSheet(false);
+  };
+
+  const playAudioBase64 = (base64Audio, onEnded, sessionId) => {
+    const currentSession = sessionId !== undefined ? sessionId : voiceSessionIdRef.current;
+    if (!isVoiceActiveRef.current || voiceSessionIdRef.current !== currentSession) {
+      return;
+    }
     if (!base64Audio) {
-      if (onEnded) onEnded();
+      if (onEnded && isVoiceActiveRef.current && voiceSessionIdRef.current === currentSession) {
+        onEnded();
+      }
       return;
     }
     try {
-      if (activeAudioRef.current) {
-        activeAudioRef.current.pause();
-        activeAudioRef.current = null;
+      stopActiveAudio();
+      if (!isVoiceActiveRef.current || voiceSessionIdRef.current !== currentSession) {
+        return;
       }
+
       setIsPlayingAudio(true);
       const audio = new Audio(`data:audio/wav;base64,${base64Audio}`);
       activeAudioRef.current = audio;
+
       audio.onended = () => {
-        setIsPlayingAudio(false);
-        activeAudioRef.current = null;
-        if (onEnded) onEnded();
+        if (activeAudioRef.current === audio) {
+          activeAudioRef.current = null;
+          setIsPlayingAudio(false);
+        }
+        if (isVoiceActiveRef.current && voiceSessionIdRef.current === currentSession && onEnded) {
+          onEnded();
+        }
       };
+
       audio.onerror = () => {
-        setIsPlayingAudio(false);
-        activeAudioRef.current = null;
-        if (onEnded) onEnded();
+        if (activeAudioRef.current === audio) {
+          activeAudioRef.current = null;
+          setIsPlayingAudio(false);
+        }
+        if (isVoiceActiveRef.current && voiceSessionIdRef.current === currentSession && onEnded) {
+          onEnded();
+        }
       };
+
       audio.play().catch(e => {
         console.warn('Audio play prevented:', e);
-        setIsPlayingAudio(false);
-        if (onEnded) onEnded();
+        if (activeAudioRef.current === audio) {
+          activeAudioRef.current = null;
+          setIsPlayingAudio(false);
+        }
+        if (isVoiceActiveRef.current && voiceSessionIdRef.current === currentSession && onEnded) {
+          onEnded();
+        }
       });
     } catch (e) {
       console.error('Audio play error:', e);
       setIsPlayingAudio(false);
-      if (onEnded) onEnded();
+      activeAudioRef.current = null;
+      if (isVoiceActiveRef.current && voiceSessionIdRef.current === currentSession && onEnded) {
+        onEnded();
+      }
     }
   };
 
   const handleOpenVoiceMode = async (forceReset = false) => {
+    voiceSessionIdRef.current += 1;
+    const currentSessionId = voiceSessionIdRef.current;
+    isVoiceActiveRef.current = true;
+    isRecordingCancelledRef.current = false;
+
+    stopActiveAudio();
     setIsFullScreenVoice(true);
+
     try {
       const AudioCtx = window.AudioContext || window.webkitAudioContext;
       if (AudioCtx) {
@@ -152,9 +257,24 @@ export default function MobileAppView({
     if (needsStart) {
       try {
         setIsProcessing(true);
-        const res = await fetch(`/api/closing/trigger?lang=${currentLang}`, { method: 'POST' });
+        if (activeAbortControllerRef.current) {
+          try { activeAbortControllerRef.current.abort(); } catch (e) {}
+        }
+        activeAbortControllerRef.current = new AbortController();
+        const signal = activeAbortControllerRef.current.signal;
+
+        const res = await fetch(`/api/closing/trigger?lang=${currentLang}`, { method: 'POST', signal });
+
+        if (voiceSessionIdRef.current !== currentSessionId || !isVoiceActiveRef.current) {
+          return;
+        }
+
         if (res.ok) {
           const data = await res.json();
+          if (voiceSessionIdRef.current !== currentSessionId || !isVoiceActiveRef.current) {
+            return;
+          }
+
           setFlowState(data);
           setLastAssistantReply(data.reply);
           setVoiceMessages([{
@@ -163,42 +283,50 @@ export default function MobileAppView({
             text: data.reply,
             time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
           }]);
-          if (data.audio_base64) {
+          if (data.audio_base64 && isVoiceActiveRef.current && voiceSessionIdRef.current === currentSessionId) {
             playAudioBase64(data.audio_base64, () => {
-              startRecording();
-            });
-          } else {
+              if (isVoiceActiveRef.current && voiceSessionIdRef.current === currentSessionId) {
+                startRecording();
+              }
+            }, currentSessionId);
+          } else if (isVoiceActiveRef.current && voiceSessionIdRef.current === currentSessionId) {
             startRecording();
           }
         }
       } catch (err) {
+        if (err.name === 'AbortError') return;
         console.error('Closing trigger error:', err);
       } finally {
-        setIsProcessing(false);
+        if (voiceSessionIdRef.current === currentSessionId) {
+          setIsProcessing(false);
+        }
       }
     } else {
-      if (!isRecording && !isPlayingAudio && !summaryReady) {
+      if (!isRecording && !isPlayingAudio && !summaryReady && isVoiceActiveRef.current) {
         startRecording();
       }
     }
   };
 
-  const stopActiveAudio = () => {
-    if (activeAudioRef.current) {
-      activeAudioRef.current.pause();
-      activeAudioRef.current = null;
-      setIsPlayingAudio(false);
-    }
-  };
-
   const startRecording = async () => {
+    if (!isVoiceActiveRef.current) return;
+    const currentSession = voiceSessionIdRef.current;
     stopActiveAudio();
     setIsRecording(true);
     setMicPermissionError(false);
+    isRecordingCancelledRef.current = false;
 
     try {
       if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        if (!isVoiceActiveRef.current || voiceSessionIdRef.current !== currentSession) {
+          stream.getTracks().forEach(t => {
+            try { t.stop(); } catch (e) {}
+          });
+          setIsRecording(false);
+          return;
+        }
+
         audioChunksRef.current = [];
         let mimeType = 'audio/webm';
         if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
@@ -212,10 +340,16 @@ export default function MobileAppView({
           if (event.data.size > 0) audioChunksRef.current.push(event.data);
         };
         recorder.onstop = async () => {
-          const audioBlob = new Blob(audioChunksRef.current, { type: mimeType });
-          stream.getTracks().forEach(t => t.stop());
+          stream.getTracks().forEach(t => {
+            try { t.stop(); } catch (e) {}
+          });
+          if (isRecordingCancelledRef.current || !isVoiceActiveRef.current || voiceSessionIdRef.current !== currentSession) {
+            audioChunksRef.current = [];
+            return;
+          }
           if (audioChunksRef.current.length > 0) {
-            await processVoiceAudio(audioBlob);
+            const audioBlob = new Blob(audioChunksRef.current, { type: mimeType });
+            await processVoiceAudio(audioBlob, currentSession);
           }
         };
         recorder.start(250);
@@ -228,15 +362,22 @@ export default function MobileAppView({
     }
   };
 
-  const stopRecording = () => {
+  const stopRecording = (shouldCancel = false) => {
     setIsRecording(false);
+    if (shouldCancel) {
+      isRecordingCancelledRef.current = true;
+    }
     if (isRealMicActiveRef.current && mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
-      mediaRecorderRef.current.stop();
+      try {
+        mediaRecorderRef.current.stop();
+      } catch (e) {}
       isRealMicActiveRef.current = false;
     }
   };
 
-  const processVoiceAudio = async (audioBlob) => {
+  const processVoiceAudio = async (audioBlob, sessionId) => {
+    const currentSession = sessionId !== undefined ? sessionId : voiceSessionIdRef.current;
+    if (voiceSessionIdRef.current !== currentSession || !isVoiceActiveRef.current) return;
     if (!audioBlob || audioBlob.size < 500) return;
     setIsProcessing(true);
     try {
@@ -244,26 +385,41 @@ export default function MobileAppView({
       formData.append('audio', audioBlob, 'recording.webm');
       formData.append('language_code', currentLang);
 
+      if (activeAbortControllerRef.current) {
+        try { activeAbortControllerRef.current.abort(); } catch (e) {}
+      }
+      activeAbortControllerRef.current = new AbortController();
+      const signal = activeAbortControllerRef.current.signal;
+
       const sttRes = await fetch('/api/voice/stt', {
         method: 'POST',
-        body: formData
+        body: formData,
+        signal
       });
+      if (voiceSessionIdRef.current !== currentSession || !isVoiceActiveRef.current) return;
+
       const sttData = await sttRes.json();
+      if (voiceSessionIdRef.current !== currentSession || !isVoiceActiveRef.current) return;
 
       if (sttData.success && sttData.transcript) {
         setLastUserTranscript(sttData.transcript);
-        await handleSendMessage(sttData.transcript);
+        await handleSendMessage(sttData.transcript, currentSession);
       } else {
         const fallbackMsg = sttData.error || 'Could not understand speech clearly. Please try again or tap one of the options below.';
         setLastAssistantReply(fallbackMsg);
       }
     } catch (err) {
+      if (err.name === 'AbortError') return;
       console.error('STT failed:', err);
     } finally {
-      setIsProcessing(false);
+      if (voiceSessionIdRef.current === currentSession) {
+        setIsProcessing(false);
+      }
     }
   };
-  const handleSendMessage = async (textToSend) => {
+
+  const handleSendMessage = async (textToSend, sessionId) => {
+    const currentSession = sessionId !== undefined ? sessionId : voiceSessionIdRef.current;
     const text = (textToSend || inputMessage).trim();
     if (!text) return;
 
@@ -281,6 +437,12 @@ export default function MobileAppView({
     setIsProcessing(true);
 
     try {
+      if (activeAbortControllerRef.current) {
+        try { activeAbortControllerRef.current.abort(); } catch (e) {}
+      }
+      activeAbortControllerRef.current = new AbortController();
+      const signal = activeAbortControllerRef.current.signal;
+
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -288,9 +450,18 @@ export default function MobileAppView({
           message: text,
           language_code: currentLang,
           flow_state: flowState
-        })
+        }),
+        signal
       });
+
+      if (voiceSessionIdRef.current !== currentSession || !isVoiceActiveRef.current) {
+        return;
+      }
+
       const data = await res.json();
+      if (voiceSessionIdRef.current !== currentSession || !isVoiceActiveRef.current) {
+        return;
+      }
 
       setLastAssistantReply(data.reply);
       const botMsg = {
@@ -319,17 +490,21 @@ export default function MobileAppView({
         setFlowState(null);
         if (onDataUpdated) onDataUpdated();
       }
-      if (data.audio_base64) {
+
+      if (data.audio_base64 && isVoiceActiveRef.current && voiceSessionIdRef.current === currentSession) {
         playAudioBase64(data.audio_base64, () => {
-          if (isFullScreenVoice && !data.saved && !data.summary_ready) {
+          if (isVoiceActiveRef.current && isFullScreenVoice && !data.saved && !data.summary_ready && voiceSessionIdRef.current === currentSession) {
             startRecording();
           }
-        });
+        }, currentSession);
       }
     } catch (err) {
+      if (err.name === 'AbortError') return;
       console.error('Chat error:', err);
     } finally {
-      setIsProcessing(false);
+      if (voiceSessionIdRef.current === currentSession) {
+        setIsProcessing(false);
+      }
     }
   };
 
@@ -337,6 +512,7 @@ export default function MobileAppView({
     const payload = customPayload || pendingClosing;
     if (!payload) return;
     setIsProcessing(true);
+    const currentSession = voiceSessionIdRef.current;
     try {
       const res = await fetch('/api/closing/confirm', {
         method: 'POST',
@@ -359,7 +535,7 @@ export default function MobileAppView({
         setFlowState(null);
         if (onDataUpdated) onDataUpdated();
         setTimeout(() => {
-          setIsFullScreenVoice(false);
+          handleCloseVoiceMode();
         }, 2200);
 
         const successText = currentLang === 'te-IN'
@@ -380,21 +556,34 @@ export default function MobileAppView({
         setLastAssistantReply(successText);
 
         try {
+          if (activeAbortControllerRef.current) {
+            try { activeAbortControllerRef.current.abort(); } catch (e) {}
+          }
+          activeAbortControllerRef.current = new AbortController();
+          const signal = activeAbortControllerRef.current.signal;
+
           const ttsRes = await fetch('/api/voice/tts', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text: successText, language_code: currentLang })
+            body: JSON.stringify({ text: successText, language_code: currentLang }),
+            signal
           });
           const ttsData = await ttsRes.json();
-          if (ttsData.audio_base64) playAudioBase64(ttsData.audio_base64);
+          if (ttsData.audio_base64 && isVoiceActiveRef.current && voiceSessionIdRef.current === currentSession) {
+            playAudioBase64(ttsData.audio_base64, null, currentSession);
+          }
         } catch (e) {
-          console.warn('TTS confirm error:', e);
+          if (e.name !== 'AbortError') {
+            console.warn('TTS confirm error:', e);
+          }
         }
       }
     } catch (err) {
       console.error('Direct confirm error:', err);
     } finally {
-      setIsProcessing(false);
+      if (voiceSessionIdRef.current === currentSession) {
+        setIsProcessing(false);
+      }
     }
   };
 
@@ -960,12 +1149,11 @@ export default function MobileAppView({
           <FullScreenVoiceExperience
             isOpen={isFullScreenVoice}
             onMinimize={() => {
+              stopActiveAudio();
               setIsFullScreenVoice(false);
               setShowVoiceSheet(true);
             }}
-            onClose={() => {
-              setIsFullScreenVoice(false);
-            }}
+            onClose={handleCloseVoiceMode}
             voiceState={isRecording ? 'listening' : isProcessing ? 'thinking' : isPlayingAudio ? 'speaking' : 'idle'}
             currentLang={currentLang}
             setLanguage={setLanguage}

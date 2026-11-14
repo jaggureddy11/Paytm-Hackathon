@@ -97,6 +97,28 @@ export default function FullScreenVoiceExperience({
     }
   }, [pendingClosing]);
 
+  // Teardown cleanly on component unmount or when modal is closed
+  useEffect(() => {
+    if (!isOpen) {
+      stopActiveAudio?.();
+      stopRecording?.(true);
+    }
+    return () => {
+      stopActiveAudio?.();
+      stopRecording?.(true);
+    };
+  }, [isOpen]);
+
+  const handleUserClose = () => {
+    stopActiveAudio?.();
+    stopRecording?.(true);
+    if (onClose) {
+      onClose();
+    } else if (onMinimize) {
+      onMinimize();
+    }
+  };
+
   if (!isOpen) return null;
 
   const handleApplyEdits = () => {
@@ -171,7 +193,10 @@ export default function FullScreenVoiceExperience({
       {/* SENIOR PAYTM TOP BAR: CLEAN MINIMIZE + LANGUAGE TOGGLE + CLOSE */}
       <div className="relative z-10 px-5 pt-3.5 pb-2 flex items-center justify-between">
         <button
-          onClick={onMinimize}
+          onClick={() => {
+            stopActiveAudio?.();
+            onMinimize?.();
+          }}
           className="p-2 rounded-full text-slate-500 hover:text-slate-800 hover:bg-slate-100 transition-colors"
           title="Minimise to chat"
         >
@@ -202,7 +227,7 @@ export default function FullScreenVoiceExperience({
         </div>
 
         <button
-          onClick={onClose || onMinimize}
+          onClick={handleUserClose}
           className="p-2 rounded-full text-slate-500 hover:text-slate-800 hover:bg-slate-100 transition-colors"
           title="Close voice mode"
         >
@@ -454,7 +479,7 @@ export default function FullScreenVoiceExperience({
         
         {/* Close Button */}
         <button
-          onClick={onClose || onMinimize}
+          onClick={handleUserClose}
           className="w-12 h-12 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-600 hover:text-slate-900 flex items-center justify-center transition-all shadow-sm active:scale-95 cursor-pointer"
           title="Close voice mode"
         >
